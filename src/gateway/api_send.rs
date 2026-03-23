@@ -38,19 +38,19 @@ pub async fn handle_api_send(
 
     let send_result: Result<&str, String> = match channel_name.as_str() {
         "whatsapp" => match &state.whatsapp {
-            Some(ch) => ch.send(&msg).await.map(|_| "whatsapp").map_err(|e| e.to_string()),
+            Some(ch) => ch.send(&msg).await.map(|()| "whatsapp").map_err(|e| e.to_string()),
             None => Err("WhatsApp channel not configured".into()),
         },
         "linq" => match &state.linq {
-            Some(ch) => ch.send(&msg).await.map(|_| "linq").map_err(|e| e.to_string()),
+            Some(ch) => ch.send(&msg).await.map(|()| "linq").map_err(|e| e.to_string()),
             None => Err("Linq channel not configured".into()),
         },
         "nextcloud_talk" | "nextcloud-talk" => match &state.nextcloud_talk {
-            Some(ch) => ch.send(&msg).await.map(|_| "nextcloud_talk").map_err(|e| e.to_string()),
+            Some(ch) => ch.send(&msg).await.map(|()| "nextcloud_talk").map_err(|e| e.to_string()),
             None => Err("Nextcloud Talk channel not configured".into()),
         },
         "wati" => match &state.wati {
-            Some(ch) => ch.send(&msg).await.map(|_| "wati").map_err(|e| e.to_string()),
+            Some(ch) => ch.send(&msg).await.map(|()| "wati").map_err(|e| e.to_string()),
             None => Err("WATI channel not configured".into()),
         },
         _ => Err(format!(
