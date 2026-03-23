@@ -2,7 +2,7 @@
 //!
 //! All `/api/*` routes require bearer token authentication (PairingGuard).
 
-use super::AppState;
+pub(super) use super::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
@@ -1525,6 +1525,8 @@ mod tests {
             canvas_store: crate::tools::canvas::CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
 

@@ -25,7 +25,7 @@ pub use schema::{
     NotionConfig, ObservabilityConfig, OpenAiSttConfig, OpenAiTtsConfig, OpenCodeCliConfig,
     OpenVpnTunnelConfig, OtpConfig, OtpMethod, PacingConfig, PeripheralBoardConfig,
     PeripheralsConfig, PipelineConfig, PiperTtsConfig, PluginsConfig, ProjectIntelConfig,
-    ProxyConfig, ProxyScope, QdrantConfig, QueryClassificationConfig, ReliabilityConfig,
+    ProxyConfig, ProxyScope, QdrantConfig, QueryClassificationConfig, RagConfig, ReliabilityConfig,
     ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig,
     SearchMode, SecretsConfig, SecurityConfig, SecurityOpsConfig, ShellToolConfig,
     SkillCreationConfig, SkillImprovementConfig, SkillsConfig, SkillsPromptInjectionMode,

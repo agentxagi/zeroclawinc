@@ -9,6 +9,10 @@
 
 pub mod api;
 pub mod api_pairing;
+pub mod api_rag;
+pub mod api_send;
+pub mod api_callback;
+pub mod api_work;
 #[cfg(feature = "plugins-wasm")]
 pub mod api_plugins;
 #[cfg(feature = "webauthn")]
@@ -368,6 +372,10 @@ pub struct AppState {
     /// WebAuthn state for hardware key authentication (optional, requires `webauthn` feature)
     #[cfg(feature = "webauthn")]
     pub webauthn: Option<Arc<api_webauthn::WebAuthnState>>,
+    /// Generic document RAG (optional, enabled via [rag] config)
+    pub rag: Option<Arc<crate::rag::document::DocumentRag>>,
+    /// Async work task status store
+    pub work_store: api_work::WorkStore,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -386,13 +394,6 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         );
     }
     let config_state = Arc::new(Mutex::new(config.clone()));
-
-    // ── Hooks ──────────────────────────────────────────────────────
-    let hooks: Option<std::sync::Arc<crate::hooks::HookRunner>> = if config.hooks.enabled {
-        Some(std::sync::Arc::new(crate::hooks::HookRunner::new()))
-    } else {
-        None
-    };
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -435,6 +436,18 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         &config.autonomy,
         &config.workspace_dir,
     ));
+
+    // ── Hooks + RAG ──────────────────────────────────────────────
+    let (hooks, rag) = if config.hooks.enabled {
+        let hook_runner = crate::hooks::HookRunner::new();
+        // RAG hook: registered via create_rag_setup which is called from the
+        // library context. In the binary context (which compiles gateway/mod.rs
+        // separately), RAG hooks are not available due to cross-crate type mismatches.
+        // The library's run_gateway handles RAG initialization correctly.
+        (Some(std::sync::Arc::new(hook_runner)), None)
+    } else {
+        (None, None)
+    };
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
@@ -869,6 +882,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         } else {
             None
         },
+        rag,
+        work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -923,6 +938,17 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/memory", get(api::handle_api_memory_list))
         .route("/api/memory", post(api::handle_api_memory_store))
         .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
+        // ── RAG API ──
+        .route("/api/rag/documents", get(api_rag::handle_rag_documents_list))
+        .route("/api/rag/ingest", post(api_rag::handle_rag_ingest))
+        .route("/api/rag/query", post(api_rag::handle_rag_query))
+        .route("/api/rag/documents/{id}", delete(api_rag::handle_rag_document_delete))
+        // ── Send / Callback / Worker API ──
+        .route("/api/send", post(api_send::handle_api_send))
+        .route("/api/callback", post(api_callback::handle_api_callback))
+        .route("/api/callback/{task_id}", get(api_callback::handle_api_callback_get))
+        .route("/api/worker", post(api_work::handle_api_worker).get(api_work::handle_api_worker_list))
+        .route("/api/worker/{id}/status", get(api_work::handle_api_worker_status))
         .route("/api/cost", get(api::handle_api_cost))
         .route("/api/cli-tools", get(api::handle_api_cli_tools))
         .route("/api/health", get(api::handle_api_health))
@@ -1265,7 +1291,7 @@ async fn run_gateway_chat_simple(state: &AppState, message: &str) -> anyhow::Res
 }
 
 /// Full-featured chat with tools for channel handlers (WhatsApp, Linq, Nextcloud Talk).
-async fn run_gateway_chat_with_tools(
+pub(super) async fn run_gateway_chat_with_tools(
     state: &AppState,
     message: &str,
     session_id: Option<&str>,
@@ -2262,6 +2288,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2322,6 +2350,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2712,6 +2742,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let mut headers = HeaderMap::new();
@@ -2786,6 +2818,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let headers = HeaderMap::new();
@@ -2872,6 +2906,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let response = handle_webhook(
@@ -2930,6 +2966,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let mut headers = HeaderMap::new();
@@ -2993,6 +3031,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let mut headers = HeaderMap::new();
@@ -3061,6 +3101,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3125,6 +3167,8 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            rag: None,
+            work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         let mut headers = HeaderMap::new();

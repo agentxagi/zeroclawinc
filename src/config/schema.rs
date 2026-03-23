@@ -166,6 +166,10 @@ pub struct Config {
     #[serde(default)]
     pub reliability: ReliabilityConfig,
 
+    /// RAG (Retrieval-Augmented Generation) configuration (`[rag]`).
+    #[serde(default)]
+    pub rag: RagConfig,
+
     /// Scheduler configuration for periodic task execution (`[scheduler]`).
     #[serde(default)]
     pub scheduler: SchedulerConfig,
@@ -5571,6 +5575,65 @@ impl Default for SchedulerConfig {
     }
 }
 
+// ── RAG ──────────────────────────────────────────────────────────
+
+/// RAG (Retrieval-Augmented Generation) configuration (`[rag]` section).
+///
+/// ```toml
+/// [rag]
+/// enabled = false
+/// max_chunks = 5
+/// min_relevance = 0.4
+/// chunk_max_tokens = 512
+/// chunk_overlap = 64
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RagConfig {
+    /// Enable RAG functionality.
+    #[serde(default = "default_rag_enabled")]
+    pub enabled: bool,
+    /// Maximum number of chunks to retrieve per query.
+    #[serde(default = "default_rag_max_chunks")]
+    pub max_chunks: usize,
+    /// Minimum relevance score (0.0-1.0) for retrieved chunks.
+    #[serde(default = "default_rag_min_relevance")]
+    pub min_relevance: f64,
+    /// Maximum tokens per chunk when splitting documents.
+    #[serde(default = "default_rag_chunk_max_tokens")]
+    pub chunk_max_tokens: usize,
+    /// Overlap tokens between consecutive chunks.
+    #[serde(default = "default_rag_chunk_overlap")]
+    pub chunk_overlap: usize,
+}
+
+fn default_rag_enabled() -> bool {
+    false
+}
+fn default_rag_max_chunks() -> usize {
+    5
+}
+fn default_rag_min_relevance() -> f64 {
+    0.4
+}
+fn default_rag_chunk_max_tokens() -> usize {
+    512
+}
+fn default_rag_chunk_overlap() -> usize {
+    64
+}
+
+impl Default for RagConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_rag_enabled(),
+            max_chunks: default_rag_max_chunks(),
+            min_relevance: default_rag_min_relevance(),
+            chunk_max_tokens: default_rag_chunk_max_tokens(),
+            chunk_overlap: default_rag_chunk_overlap(),
+        }
+    }
+}
+
 // ── Model routing ────────────────────────────────────────────────
 
 /// Route a task hint to a specific provider + model.
@@ -8146,6 +8209,7 @@ impl Default for Config {
             security_ops: SecurityOpsConfig::default(),
             runtime: RuntimeConfig::default(),
             reliability: ReliabilityConfig::default(),
+            rag: RagConfig::default(),
             scheduler: SchedulerConfig::default(),
             agent: AgentConfig::default(),
             pacing: PacingConfig::default(),
@@ -11250,6 +11314,7 @@ auto_save = true
                 ..RuntimeConfig::default()
             },
             reliability: ReliabilityConfig::default(),
+            rag: RagConfig::default(),
             scheduler: SchedulerConfig::default(),
             skills: SkillsConfig::default(),
             pipeline: PipelineConfig::default(),
@@ -11832,6 +11897,7 @@ default_temperature = 0.7
             security_ops: SecurityOpsConfig::default(),
             runtime: RuntimeConfig::default(),
             reliability: ReliabilityConfig::default(),
+            rag: RagConfig::default(),
             scheduler: SchedulerConfig::default(),
             skills: SkillsConfig::default(),
             pipeline: PipelineConfig::default(),

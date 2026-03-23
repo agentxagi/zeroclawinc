@@ -137,3 +137,12 @@ allow_override = false
 # max_sessions = 10
 # Session inactivity timeout in seconds. Default: 3600 (1 hour)
 # session_timeout_secs = 3600
+
+# ── RAG Configuration ─────────────────────────────────────────────
+# Retrieval-Augmented Generation for document-grounded responses.
+[rag]
+enabled = false
+max_chunks = 5
+min_relevance = 0.4
+chunk_max_tokens = 512
+chunk_overlap = 64

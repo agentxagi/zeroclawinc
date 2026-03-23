@@ -407,7 +407,8 @@ impl OpenAiCompatibleProvider {
 
     fn reasoning_effort_for_model(&self, model: &str) -> Option<String> {
         let id = model.rsplit('/').next().unwrap_or(model);
-        let supports_reasoning_effort = id.starts_with("gpt-5") || id.contains("codex");
+        let supports_reasoning_effort =
+            id.starts_with("gpt-5") || id.contains("codex") || id.starts_with("glm-");
         supports_reasoning_effort
             .then(|| self.reasoning_effort.clone())
             .flatten()

@@ -1,10 +1,62 @@
-//! RAG pipeline for hardware datasheet retrieval.
+//! RAG pipeline for document retrieval.
 //!
 //! Supports:
-//! - Markdown and text datasheets (always)
-//! - PDF ingestion (with `rag-pdf` feature)
-//! - Pin/alias tables (e.g. `red_led: 13`) for explicit lookup
-//! - Keyword retrieval (default) or semantic search via embeddings (optional)
+//! - Hardware datasheet retrieval (HardwareRag)
+//! - Generic document RAG with embeddings (DocumentRag)
+//! - RAG hook for prompt augmentation (DocumentRagHook)
+
+pub mod document;
+pub mod hook;
+
+use crate::config::RagConfig;
+use crate::memory::Memory;
+use crate::memory::embeddings::create_embedding_provider;
+use std::sync::Arc;
+
+/// Result of RAG initialization containing the document store and hook handler.
+pub struct RagSetup {
+    pub document_rag: Arc<document::DocumentRag>,
+    pub hook_handler: Box<dyn crate::hooks::HookHandler>,
+}
+
+/// Create a DocumentRag and DocumentRagHook if RAG is enabled.
+///
+/// This function uses only primitive parameter types (String, usize, etc.)
+/// to avoid cross-crate type mismatches between library and binary.
+pub fn create_rag_setup(
+    rag_config: &RagConfig,
+    embedding_provider: &str,
+    api_key: Option<&str>,
+    embedding_model: &str,
+    embedding_dims: usize,
+    memory: Arc<dyn Memory>,
+) -> Option<RagSetup> {
+    if !rag_config.enabled {
+        return None;
+    }
+
+    let embedding = Arc::from(create_embedding_provider(
+        embedding_provider,
+        api_key,
+        embedding_model,
+        embedding_dims,
+    ));
+
+    let doc_rag = Arc::new(document::DocumentRag::new(
+        rag_config.clone(),
+        memory,
+        embedding,
+    ));
+
+    let hook_handler: Box<dyn crate::hooks::HookHandler> =
+        Box::new(hook::DocumentRagHook::new(Arc::clone(&doc_rag)));
+
+    tracing::info!("RAG enabled — document hook registered");
+    Some(RagSetup {
+        document_rag: doc_rag,
+        hook_handler,
+    })
+}
 
 use crate::memory::chunker;
 use std::collections::HashMap;
