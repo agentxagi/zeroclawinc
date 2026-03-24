@@ -13,6 +13,7 @@ pub mod api_rag;
 pub mod api_send;
 pub mod api_callback;
 pub mod api_work;
+pub mod api_work_sse;
 #[cfg(feature = "plugins-wasm")]
 pub mod api_plugins;
 #[cfg(feature = "webauthn")]
@@ -372,10 +373,14 @@ pub struct AppState {
     /// WebAuthn state for hardware key authentication (optional, requires `webauthn` feature)
     #[cfg(feature = "webauthn")]
     pub webauthn: Option<Arc<api_webauthn::WebAuthnState>>,
+    /// Hook runner for before_prompt_build, fire_llm_input, etc.
+    pub hooks: Option<Arc<crate::hooks::HookRunner>>,
     /// Generic document RAG (optional, enabled via [rag] config)
     pub rag: Option<Arc<crate::rag::document::DocumentRag>>,
     /// Async work task status store
     pub work_store: api_work::WorkStore,
+    /// Per-task SSE event broadcast channels (work_id -> sender)
+    pub worker_event_tx: Arc<dashmap::DashMap<String, tokio::sync::broadcast::Sender<serde_json::Value>>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -438,12 +443,25 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     ));
 
     // ── Hooks + RAG ──────────────────────────────────────────────
-    let (hooks, rag) = if config.hooks.enabled {
-        let hook_runner = crate::hooks::HookRunner::new();
-        // RAG hook: registered via create_rag_setup which is called from the
-        // library context. In the binary context (which compiles gateway/mod.rs
-        // separately), RAG hooks are not available due to cross-crate type mismatches.
-        // The library's run_gateway handles RAG initialization correctly.
+    let hook_runner = crate::hooks::HookRunner::new();
+    let (hooks, rag) = if config.hooks.enabled && config.rag.enabled {
+        let embedding = crate::rag::document::DocumentRag::create_embedding(
+            &config.memory.embedding_provider,
+            config.api_key.as_deref(),
+            &config.memory.embedding_model,
+            config.memory.embedding_dimensions,
+        );
+        let doc_rag = Arc::new(crate::rag::document::DocumentRag::new(
+            config.rag.clone(),
+            Arc::clone(&mem),
+            embedding,
+        ));
+        let rag_hook = crate::rag::hook::DocumentRagHook::new(Arc::clone(&doc_rag));
+        let mut runner = crate::hooks::HookRunner::new();
+        runner.register(Box::new(rag_hook));
+        tracing::info!("Gateway: RAG hook registered (document-rag-hook)");
+        (Some(std::sync::Arc::new(runner)), Some(doc_rag))
+    } else if config.hooks.enabled {
         (Some(std::sync::Arc::new(hook_runner)), None)
     } else {
         (None, None)
@@ -882,14 +900,68 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         } else {
             None
         },
+        hooks,
         rag,
         work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        worker_event_tx: Arc::new(dashmap::DashMap::new()),
     };
 
     // Config PUT needs larger body limit (1MB)
     let config_put_router = Router::new()
         .route("/api/config", put(api::handle_api_config_put))
         .layer(RequestBodyLimitLayer::new(1_048_576));
+
+    // ── Worker task cleanup (spawned before state is moved into router) ──
+    {
+        let work_store = state.work_store.clone();
+        let worker_ttl = config.gateway.worker_ttl_secs;
+        let worker_max = config.gateway.worker_max_completed;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let mut store = work_store.write().await;
+                let before = store.len();
+                let now = chrono::Utc::now();
+                store.retain(|_, status| {
+                    if status.status == "running" || status.status == "pending" {
+                        return true;
+                    }
+                    if let Some(ref completed_at) = status.completed_at {
+                        if let Ok(completed) = chrono::DateTime::parse_from_rfc3339(completed_at) {
+                            let age = now.signed_duration_since(completed);
+                            if age.num_seconds() < worker_ttl as i64 {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                });
+                if store.len() > worker_max {
+                    let mut completed_ids: Vec<String> = store
+                        .iter()
+                        .filter(|(_, s)| {
+                            s.status == "completed" || s.status == "failed" || s.status == "timeout"
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    completed_ids.sort_by(|a, b| {
+                        let sa = store.get(a).and_then(|s| s.completed_at.as_deref());
+                        let sb = store.get(b).and_then(|s| s.completed_at.as_deref());
+                        sa.cmp(&sb)
+                    });
+                    let excess = store.len() - worker_max;
+                    for id in completed_ids.into_iter().take(excess) {
+                        store.remove(&id);
+                    }
+                }
+                let removed = before.saturating_sub(store.len());
+                if removed > 0 {
+                    tracing::info!("Worker cleanup: removed {removed} expired tasks");
+                }
+            }
+        });
+    }
 
     // Build router with middleware
     let inner = Router::new()
@@ -1297,7 +1369,8 @@ pub(super) async fn run_gateway_chat_with_tools(
     session_id: Option<&str>,
 ) -> anyhow::Result<String> {
     let config = state.config.lock().clone();
-    Box::pin(crate::agent::process_message(config, message, session_id)).await
+    let hooks = state.hooks.as_deref();
+    Box::pin(crate::agent::process_message(config, message, session_id, hooks)).await
 }
 
 /// Webhook request body
@@ -2288,8 +2361,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2350,8 +2425,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2742,8 +2819,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let mut headers = HeaderMap::new();
@@ -2818,8 +2897,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let headers = HeaderMap::new();
@@ -2906,8 +2987,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let response = handle_webhook(
@@ -2966,8 +3049,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let mut headers = HeaderMap::new();
@@ -3031,8 +3116,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let mut headers = HeaderMap::new();
@@ -3101,8 +3188,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3167,8 +3256,10 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            hooks: None,
             rag: None,
             work_store: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            worker_event_tx: Arc::new(dashmap::DashMap::new()),
         };
 
         let mut headers = HeaderMap::new();

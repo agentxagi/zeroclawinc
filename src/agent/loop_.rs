@@ -2460,6 +2460,7 @@ pub(crate) async fn agent_turn(
     multimodal_config: &crate::config::MultimodalConfig,
     max_tool_iterations: usize,
     approval: Option<&ApprovalManager>,
+    hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
@@ -2481,7 +2482,7 @@ pub(crate) async fn agent_turn(
         max_tool_iterations,
         None,
         None,
-        None,
+        hooks,
         excluded_tools,
         dedup_exempt_tools,
         activated_tools,
@@ -2951,6 +2952,27 @@ pub(crate) async fn run_tool_call_loop(
         );
 
         let llm_started_at = Instant::now();
+
+        // Run modifying hooks on system prompt (first iteration only, when
+        // history[0] is the system message).  This is where the RAG hook
+        // injects document context.
+        if iteration == 0 {
+            if let Some(hooks) = hooks {
+                if let Some(sys_msg) = history.first_mut() {
+                    let original = sys_msg.content.clone();
+                    match hooks.run_before_prompt_build(original).await {
+                        crate::hooks::HookResult::Continue(augmented) => {
+                            sys_msg.content = augmented;
+                        }
+                        crate::hooks::HookResult::Cancel(reason) => {
+                            tracing::warn!(
+                                "before_prompt_build hook cancelled: {reason}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Fire void hook before LLM call
         if let Some(hooks) = hooks {
@@ -4740,6 +4762,7 @@ pub async fn process_message(
     config: Config,
     message: &str,
     session_id: Option<&str>,
+    hooks: Option<&crate::hooks::HookRunner>,
 ) -> Result<String> {
     let observer: Arc<dyn Observer> =
         Arc::from(observability::create_observer(&config.observability));
@@ -5070,6 +5093,7 @@ pub async fn process_message(
         &config.multimodal,
         config.agent.max_tool_iterations,
         Some(&approval_manager),
+        hooks,
         &excluded_tools,
         &config.agent.tool_call_dedup_exempt,
         activated_handle_pm.as_ref(),
@@ -7280,6 +7304,7 @@ mod tests {
                 None,
                 &crate::config::MultimodalConfig::default(),
                 4,
+                None,
                 None,
                 &[],
                 &[],

@@ -2042,6 +2042,15 @@ pub struct GatewayConfig {
     /// TLS configuration for the gateway server (`[gateway.tls]`).
     #[serde(default)]
     pub tls: Option<GatewayTlsConfig>,
+    /// Seconds after which completed/failed worker tasks are eligible for cleanup.
+    /// Default: 3600 (1 hour).
+    #[serde(default = "default_worker_ttl_secs")]
+    pub worker_ttl_secs: u64,
+
+    /// Maximum number of completed/failed worker tasks to retain in memory.
+    /// Default: 1000.
+    #[serde(default = "default_worker_max_completed")]
+    pub worker_max_completed: usize,
 }
 
 fn default_gateway_port() -> u16 {
@@ -2072,6 +2081,14 @@ fn default_gateway_idempotency_max_keys() -> usize {
     10_000
 }
 
+fn default_worker_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_worker_max_completed() -> usize {
+    1000
+}
+
 fn default_true() -> bool {
     true
 }
@@ -2099,6 +2116,8 @@ impl Default for GatewayConfig {
             session_ttl_hours: 0,
             pairing_dashboard: PairingDashboardConfig::default(),
             tls: None,
+            worker_ttl_secs: default_worker_ttl_secs(),
+            worker_max_completed: default_worker_max_completed(),
         }
     }
 }
@@ -12828,6 +12847,8 @@ channel_ids = ["C123", "D456"]
             session_ttl_hours: 0,
             pairing_dashboard: PairingDashboardConfig::default(),
             tls: None,
+            worker_ttl_secs: 3600,
+            worker_max_completed: 1000,
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();

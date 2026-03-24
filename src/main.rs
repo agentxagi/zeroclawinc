@@ -77,9 +77,7 @@ mod auth;
 mod channels;
 mod cli_input;
 mod commands;
-mod rag {
-    pub use zeroclaw::rag::*;
-}
+mod rag;
 mod config;
 mod cost;
 mod cron;
